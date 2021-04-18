@@ -84,8 +84,8 @@ class AttentionLayer(nn.Module):
            temporal attention model embedded within it.
         """
         super(AttentionLayer, self).__init__()
-        self.spatial_attention = nn.MultiheadAttention(embed_dim, num_heads)
-        self.temporal_attention = nn.MultiheadAttention(embed_dim, num_heads)
+        self.spatial_attention = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout_rate)
+        self.temporal_attention = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout_rate)
 
         # two layer feedforward
         self.linear1 = nn.Linear(embed_dim, feedforward_size)
@@ -103,12 +103,10 @@ class AttentionLayer(nn.Module):
         # these are obviously not right, just putting this in here as placeholders for now in this form so it 
         # feeds-forward without error
         spatial_out, spatial_attention_matrix = self.spatial_attention(inputs, inputs, inputs)
-        spatial_out = self.dropout(spatial_out)
         spatial_out += inputs # residual layer
         spatial_out = self.layer_norm(spatial_out)
 
         temporal_out, temporal_attention_matrix = self.temporal_attention(inputs, inputs, inputs)
-        temporal_out = self.dropout(temporal_out)
         temporal_out += inputs #residual layer  
         temporal_out = self.layer_norm(temporal_out)
 
@@ -150,5 +148,8 @@ if __name__ == '__main__':
     # wrong.
     print(model.attention_layers[0].linear1.weight.grad.shape)
     print(model.embedding_layer.W.grad.shape)
+    
+    print("Q,K,V weights for temporal attention stacked")
+    print(model.attention_layers[0].temporal_attention.in_proj_weight.shape)
     
 
