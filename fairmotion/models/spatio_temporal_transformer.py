@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 from torch import nn
-from torch.autograd import Variable
 
 from fairmotion.models.transformer import PositionalEncoding
 
@@ -65,8 +64,8 @@ class JointEmbeddingLayer(nn.Module):
         # I do the W and bias initialization like this to ensure that the weights 
         # are initialized exactly like Pytorch does it.
         linears = [nn.Linear(in_features=M, out_features=D) for _ in range(N)]
-        self.W = Variable(torch.stack([lin.weight for lin in linears]).permute(0,2,1), requires_grad=True)
-        self.bias = Variable(torch.stack([lin.bias for lin in linears]).unsqueeze(0).unsqueeze(0), requires_grad=True)
+        self.W = nn.Parameter(torch.stack([lin.weight for lin in linears]).permute(0,2,1), requires_grad=True)
+        self.bias = nn.Parameter(torch.stack([lin.bias for lin in linears]).unsqueeze(0).unsqueeze(0), requires_grad=True)
 
         # Saving these because they are helpful for reshaping inputs / outputs
         self.M = M
@@ -281,21 +280,32 @@ if __name__ == '__main__':
     B = 124
     x = torch.rand(B, T, N*M)
 
-    model = SpatioTemporalTransformer(N, D)
+    model = SpatioTemporalTransformer(N,D)
 
     # x = torch.rand(B, N*M, T)
 
+    import time
+    start = time.time()
     y = model(x)
+    print("forward time: ", time.time() - start)
     print(x.shape)
     print(y.shape) # B, T, N*D
     loss = y.sum()
+
+    start = time.time()
     loss.backward()
+    print('backward time', time.time() -start)
 
     # picking a few modules randomely within the model to ensure 
     # they have grad. ".grad" will give a warning or error if we did something 
     # wrong.
     print(model.attention_layers[0].linear1.weight.grad.shape)
     print(model.embedding_layer.W.grad.shape)
+
+    param_count = 0
+    for parameter in model.parameters():
+        param_count += parameter.numel()
+    print('param count', param_count)
     
     # print("Q,K,V weights for temporal attention stacked")
     # print(model.attention_layers[0].temporal_attention.in_proj_weight.shape)
