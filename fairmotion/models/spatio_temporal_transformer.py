@@ -101,11 +101,17 @@ class AttentionLayer(nn.Module):
                                 )
 
         # two layer feedforward
-        self.linear1 = nn.Linear(embed_dim*num_joints, feedforward_size)
-        self.linear2 = nn.Linear(feedforward_size, embed_dim*num_joints)
+        self.linear1 = nn.Linear(embed_dim, feedforward_size)
+        self.linear2 = nn.Linear(feedforward_size, embed_dim)
+
+        # self.feedforward = AttentionFeedForwardLayer(num_joints, embed_dim, feedforward_size)
 
         self.layer_norm = nn.LayerNorm(embed_dim*num_joints)
+        self.layer_norm_small = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout_rate)
+
+        self.N = num_joints
+        self.D = embed_dim
 
     def forward(self, inputs):
         """
@@ -125,13 +131,42 @@ class AttentionLayer(nn.Module):
 
         attention_out = spatial_out + temporal_out
 
+        attention_out = convert_joints_from_3d_to_4d(attention_out, self.N, self.D)
+
         out = self.linear1(attention_out)
         out = self.linear2(out)
+
+        #out = self.feedforward(attention_out)
         out = self.dropout(out)
         out += attention_out # residual layer
-        out = self.layer_norm(out)
+        out = self.layer_norm_small(out)
+
+        out = convert_joints_from_4d_to_3d(out, self.N, self.D)
 
         return out
+
+class AttentionFeedForwardLayer(nn.Module):
+    def __init__(self, N, embed_dim, feedforward_size):
+        super(AttentionFeedForwardLayer, self).__init__()
+        self.first_linears = nn.ModuleList([nn.Linear(embed_dim, feedforward_size) for _ in range(N)])
+        self.second_linears = nn.ModuleList([nn.Linear(feedforward_size, embed_dim) for _ in range(N)])
+        self.N = N
+
+    def forward(self, inputs):
+        """
+        inputs: (T, B, N, D)
+        outputs: (T, B, N, D)
+        """
+        # convert from (T, B, N, D) to (N, B, T, D)
+        inputs = inputs.permute(2,1,0,3)
+        outs = []
+        for i in range(self.N):
+            out = self.first_linears[i](inputs[i])
+            out = self.second_linears[i](out)
+            outs.append(out)
+        outs = torch.stack(outs)
+        # permute back to original shape
+        return outs.permute(2,1,0,3)
 
 
 class SpatialAttentionLayer(nn.Module):
@@ -149,7 +184,7 @@ class SpatialAttentionLayer(nn.Module):
         self.F = int(D / H)
         # These heads are shared across timesteps
         # so below for each timestep T, we are using the same set of "heads"
-        self.heads = [SpatialAttentionHead(N, D, self.F) for _ in range(H)]
+        self.heads = nn.ModuleList([SpatialAttentionHead(N, D, self.F) for _ in range(H)])
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, inputs):
@@ -195,7 +230,7 @@ class SpatialAttentionHead(nn.Module):
         self.k = nn.Linear(D, F)
         self.v = nn.Linear(D, F)
         # Each joint has its own weights
-        self.joint_Qs = [nn.Linear(D, F) for _ in range(N)]
+        self.joint_Qs = nn.ModuleList([nn.Linear(D, F) for _ in range(N)])
         self.softmax = nn.Softmax(dim=2)
 
     def forward(self, inputs):
@@ -234,7 +269,7 @@ class TemporalAttentionLayer(nn.Module):
         self.N = N
         self.D = D
         # Each joint uses a separate MHA
-        self.MHAs = [nn.MultiheadAttention(D, H) for _ in range(N)]
+        self.MHAs = nn.ModuleList([nn.MultiheadAttention(D, H) for _ in range(N)])
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, inputs):
@@ -275,12 +310,12 @@ if __name__ == '__main__':
     
     N = 24
     M = 9
-    D = 96
+    D = 128
     T = 12
     B = 124
     x = torch.rand(B, T, N*M)
 
-    model = SpatioTemporalTransformer(N,D)
+    model = SpatioTemporalTransformer(N,D, num_heads=4, L=4 )
 
     # x = torch.rand(B, N*M, T)
 
@@ -299,7 +334,7 @@ if __name__ == '__main__':
     # picking a few modules randomely within the model to ensure 
     # they have grad. ".grad" will give a warning or error if we did something 
     # wrong.
-    print(model.attention_layers[0].linear1.weight.grad.shape)
+    #print(model.attention_layers[0].linear1.weight.grad.shape)
     print(model.embedding_layer.W.grad.shape)
 
     param_count = 0
