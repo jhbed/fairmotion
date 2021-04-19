@@ -112,8 +112,6 @@ class AttentionLayer(nn.Module):
         self.linear1 = nn.Linear(embed_dim, feedforward_size)
         self.linear2 = nn.Linear(feedforward_size, embed_dim)
 
-        # self.feedforward = AttentionFeedForwardLayer(num_joints, embed_dim, feedforward_size)
-
         self.layer_norm = nn.LayerNorm(embed_dim*num_joints)
         self.layer_norm_small = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout_rate)
@@ -142,9 +140,9 @@ class AttentionLayer(nn.Module):
         attention_out = convert_joints_from_3d_to_4d(attention_out, self.N, self.D)
 
         out = self.linear1(attention_out)
+        out = torch.relu(out) # Relu is used here as described in "Attention is All You Need"
         out = self.linear2(out)
 
-        #out = self.feedforward(attention_out)
         out = self.dropout(out)
         out += attention_out # residual layer
         out = self.layer_norm_small(out)
@@ -152,29 +150,6 @@ class AttentionLayer(nn.Module):
         out = convert_joints_from_4d_to_3d(out, self.N, self.D)
 
         return out
-
-class AttentionFeedForwardLayer(nn.Module):
-    def __init__(self, N, embed_dim, feedforward_size):
-        super(AttentionFeedForwardLayer, self).__init__()
-        self.first_linears = nn.ModuleList([nn.Linear(embed_dim, feedforward_size) for _ in range(N)])
-        self.second_linears = nn.ModuleList([nn.Linear(feedforward_size, embed_dim) for _ in range(N)])
-        self.N = N
-
-    def forward(self, inputs):
-        """
-        inputs: (T, B, N, D)
-        outputs: (T, B, N, D)
-        """
-        # convert from (T, B, N, D) to (N, B, T, D)
-        inputs = inputs.permute(2,1,0,3)
-        outs = []
-        for i in range(self.N):
-            out = self.first_linears[i](inputs[i])
-            out = self.second_linears[i](out)
-            outs.append(out)
-        outs = torch.stack(outs)
-        # permute back to original shape
-        return outs.permute(2,1,0,3)
 
 
 class SpatialAttentionLayer(nn.Module):
