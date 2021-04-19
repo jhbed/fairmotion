@@ -37,7 +37,11 @@ class SpatioTemporalTransformer(nn.Module):
                                     *[AttentionLayer(D, N, num_heads, dropout_rate, feedforward_size) for _ in range(L)])
 
         # one last linear layer (not sure what shapes to do yet)
-        self.final_linear_layer = nn.Linear(D*N, M*N)
+        self.final_linear_layer = nn.Linear(D, M)
+
+        self.N = N
+        self.D = D
+        self.M = M
 
     def forward(self, inputs):
         
@@ -48,7 +52,11 @@ class SpatioTemporalTransformer(nn.Module):
         embeddings = embeddings.permute(1,0, 2)
 
         out = self.attention_layers(embeddings)
+
+        out = convert_joints_from_3d_to_4d(out, N, D)
         out = self.final_linear_layer(out)
+        out = convert_joints_from_4d_to_3d(out, N, M)
+
         # Transpose back into (B, T, H)
         out = out.permute(1,0,2)
 
