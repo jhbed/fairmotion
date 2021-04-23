@@ -52,7 +52,7 @@ def run_model(model, data_iter, max_len, device, mean, std):
     ]
 
 
-def save_seq(i, pred_seq, src_seq, tgt_seq, skel):
+def save_seq(i, pred_seq, src_seq, tgt_seq, skel, save_output_path):
     # seq_T contains pred, src, tgt data in the same order
     motions = [
         motion_class.Motion.from_matrix(seq, skel)
@@ -61,10 +61,10 @@ def save_seq(i, pred_seq, src_seq, tgt_seq, skel):
     ref_motion = motion_ops.append(motions[1], motions[2])
     pred_motion = motion_ops.append(motions[1], motions[0])
     bvh.save(
-        ref_motion, os.path.join(args.save_output_path, "ref", f"{i}.bvh"),
+        ref_motion, os.path.join(save_output_path, "ref", f"{i}.bvh"),
     )
     bvh.save(
-        pred_motion, os.path.join(args.save_output_path, "pred", f"{i}.bvh"),
+        pred_motion, os.path.join(save_output_path, "pred", f"{i}.bvh"),
     )
 
 
@@ -88,8 +88,9 @@ def save_motion_files(seqs_T, args):
     pool = Pool(10)
     indices = range(len(seqs_T[0]))
     skels = [amass_dip_motion.skel for _ in indices]
+
     pool.starmap(
-        save_seq, [list(zip(indices, *seqs_T, skels))[i] for i in idxs_to_save]
+        save_seq, [list(zip(indices, *seqs_T, skels, itertools.repeat(args.save_output_path)))[i] for i in idxs_to_save]
     )
 
 

@@ -31,6 +31,9 @@ def apply_ops(input, ops):
         output = op(output)
     return output
 
+def create_dir_if_absent(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
 
 def unflatten_angles(arr, rep):
     """
@@ -60,7 +63,7 @@ def flatten_angles(arr, rep):
 
 
 def multiprocess_convert(arr, convert_fn):
-    pool = Pool(40)
+    pool = Pool(10)
     result = list(pool.map(convert_fn, arr))
     return result
 
