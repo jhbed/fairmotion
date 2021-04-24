@@ -1,10 +1,34 @@
 import numpy as np
 import torch
 from torch import nn
-
+from functools import wraps
+import time
+import torch.autograd.profiler as profiler
+from torch import multiprocessing
 from fairmotion.models.transformer import PositionalEncoding
 
+TIMING_LOGS_VERBOSITY_LEVEL = 19 # all logs >= this verbosity will print
+RUNTIMES = [] # this is a bad idea, but I'm doing it anyway because it makes sorting convenient
 
+def get_runtime(classname=None, verbosity_level=5):
+    def get_runtime_noarg(func):
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            if verbosity_level < TIMING_LOGS_VERBOSITY_LEVEL:
+                return func(*args, **kwargs)
+            start = time.time()
+            ret = func(*args, **kwargs)
+            end = time.time()
+            func_name = func.__name__
+            if classname is not None:
+                func_name = classname + '.' + func_name
+            RUNTIMES.append((end-start, func_name))
+            # print('"{}" took {:.4f} secs to execute\n'.format(func_name, (end - start)))
+            return ret
+        return wrapped
+    return get_runtime_noarg
+
+@get_runtime(verbosity_level=3)
 def convert_joints_from_3d_to_4d(tensor, N,M):
     '''
     input shape: (B, T, N*M) (ie. batch, seq_len, input_dim)
@@ -12,14 +36,13 @@ def convert_joints_from_3d_to_4d(tensor, N,M):
     '''
     return tensor.reshape(tensor.shape[0], tensor.shape[1], tensor.shape[2] // M, tensor.shape[2] // N)
 
-
+@get_runtime(verbosity_level=3)
 def convert_joints_from_4d_to_3d(tensor, N, M):
     '''
     input shape: (B, T, N, M) (ie. batch, seq_len, input_dim)
     output shape: (B, T, N*M)
     '''   
     return tensor.reshape(tensor.shape[0], tensor.shape[1], tensor.shape[2] * tensor.shape[3])
-
 
 class SpatioTemporalTransformer(nn.Module):
 
@@ -43,6 +66,7 @@ class SpatioTemporalTransformer(nn.Module):
         self.D = D
         self.M = M
 
+    @get_runtime("SpatioTemporalTransformer")
     def forward(self, inputs):
         
         embeddings = self.position_encoding_layer(self.embedding_layer(inputs))
@@ -79,6 +103,7 @@ class JointEmbeddingLayer(nn.Module):
         self.M = M
         self.N = N
 
+    @get_runtime("JointEmbeddingLayer")
     def forward(self, inputs):
         """
         input shape: (B, T, N*M) (ie. batch, seq_len, input_dim)
@@ -119,6 +144,7 @@ class AttentionLayer(nn.Module):
         self.N = num_joints
         self.D = embed_dim
 
+    @get_runtime("AttentionLayer")
     def forward(self, inputs):
         """
         :param inputs: shape (T, B, H)
@@ -170,6 +196,7 @@ class SpatialAttentionLayer(nn.Module):
         self.heads = nn.ModuleList([SpatialAttentionHead(N, D, self.F) for _ in range(H)])
         self.dropout = nn.Dropout(dropout_rate)
 
+    @get_runtime("SpatialAttentionLayer")
     def forward(self, inputs):
         '''
         inputs:
@@ -210,12 +237,14 @@ class SpatialAttentionHead(nn.Module):
         super(SpatialAttentionHead, self).__init__()
         self.D = D
         self.F = F
+        self.sqrt_F = np.sqrt(self.F)
         self.k = nn.Linear(D, F)
         self.v = nn.Linear(D, F)
         # Each joint has its own weights
         self.joint_Qs = nn.ModuleList([nn.Linear(D, F) for _ in range(N)])
         self.softmax = nn.Softmax(dim=2)
 
+    @get_runtime("SpatialAttentionHead", verbosity_level=4)
     def forward(self, inputs):
         '''
         inputs: (B, N, D)
@@ -234,7 +263,7 @@ class SpatialAttentionHead(nn.Module):
         q_outputs = q_outputs.permute(0, 2, 1)
 
         attn = torch.matmul(
-            q_outputs, k_outputs.transpose(-2, -1)) / np.sqrt(self.F)
+            q_outputs, k_outputs.transpose(-2, -1)) / self.sqrt_F
         attn = self.softmax(attn)
         # head = A*V (B, N, F)
         attn = torch.matmul(attn, v_outputs)
@@ -255,6 +284,7 @@ class TemporalAttentionLayer(nn.Module):
         self.MHAs = nn.ModuleList([nn.MultiheadAttention(D, H) for _ in range(N)])
         self.dropout = nn.Dropout(dropout_rate)
 
+    @get_runtime("TemporalAttentionLayer")
     def forward(self, inputs):
         '''
         inputs:
@@ -293,18 +323,21 @@ if __name__ == '__main__':
     
     N = 24
     M = 9
-    D = 128
+    D = 64
     T = 12
     B = 124
     x = torch.rand(B, T, N*M)
 
-    model = SpatioTemporalTransformer(N,D, num_heads=4, L=4 )
+    model = SpatioTemporalTransformer(N,D, num_heads=4, L=4, feedforward_size=128)
 
     # x = torch.rand(B, N*M, T)
 
     import time
     start = time.time()
+
     y = model(x)
+
+    
     print("forward time: ", time.time() - start)
     print(x.shape)
     print(y.shape) # B, T, N*D
@@ -326,6 +359,10 @@ if __name__ == '__main__':
     print('param count', param_count)
     
     # print("Q,K,V weights for temporal attention stacked")
-    # print(model.attention_layers[0].temporal_attention.in_proj_weight.shape)
+    # print(model.attention_layers[0].temporal_attention.in_proj_weight.shape
+
+    RUNTIMES.sort()
+    for runtime, name in RUNTIMES:
+        print('"{}" took {:.4f} secs to execute'.format(name, runtime))
     
 
