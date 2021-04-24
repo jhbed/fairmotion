@@ -46,7 +46,7 @@ def convert_joints_from_4d_to_3d(tensor, N, M):
 
 class SpatioTemporalTransformer(nn.Module):
 
-    def __init__(self, N, D,  M=9, L=4, dropout_rate=0.1, num_heads=4, feedforward_size=256):
+    def __init__(self, N, D, M=9, L=4, dropout_rate=0.1, num_heads=4, feedforward_size=256, input_len=120, pred_len=24):
         """
         :param N: The number of joints that are in each pose in
         the input.
@@ -61,6 +61,8 @@ class SpatioTemporalTransformer(nn.Module):
 
         # one last linear layer (not sure what shapes to do yet)
         self.final_linear_layer = nn.Linear(D, M)
+        # prediction projection? Need output to be of certain length
+        self.prediction_layer = nn.Linear(input_len, pred_len)
 
         self.N = N
         self.D = D
@@ -68,7 +70,6 @@ class SpatioTemporalTransformer(nn.Module):
 
     @get_runtime("SpatioTemporalTransformer")
     def forward(self, inputs):
-        
         embeddings = self.position_encoding_layer(self.embedding_layer(inputs))
 
         #reverse batch and sequence length for attention layers because 
@@ -77,15 +78,28 @@ class SpatioTemporalTransformer(nn.Module):
 
         out = self.attention_layers(embeddings)
 
-        out = convert_joints_from_3d_to_4d(out, N, D)
+        out = convert_joints_from_3d_to_4d(out, self.N, self.D)
         out = self.final_linear_layer(out)
-        out = convert_joints_from_4d_to_3d(out, N, M)
+        out = convert_joints_from_4d_to_3d(out, self.N, self.M)
 
         # Transpose back into (B, T, H)
-        out = out.permute(1,0,2)
-
+        out = out.permute(1, 0, 2)
         out += inputs # residual layer
+
+        # project to desired output length
+        out = out.permute(0, 2, 1)
+        out = self.prediction_layer(out)
+        out = out.permute(0, 2, 1)
+
         return out
+
+    def init_weights(self):
+        '''
+        No ide if this is right - copied from other models
+        '''
+        for name, param in self.named_parameters():
+            nn.init.uniform_(param.data, -0.08, 0.08)
+
 
 class JointEmbeddingLayer(nn.Module):
     
@@ -283,6 +297,9 @@ class TemporalAttentionLayer(nn.Module):
         # Each joint uses a separate MHA
         self.MHAs = nn.ModuleList([nn.MultiheadAttention(D, H) for _ in range(N)])
         self.dropout = nn.Dropout(dropout_rate)
+        # Maybe consider passing the "device"
+        # variable all the way from train.py
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     @get_runtime("TemporalAttentionLayer")
     def forward(self, inputs):
@@ -297,7 +314,7 @@ class TemporalAttentionLayer(nn.Module):
         inputs = inputs.reshape(T, B, self.N, self.D)
         # mask of dimension (T, D), with 1s in lower triangle
         # and zeros else where
-        attn_mask = torch.ones(T, T)
+        attn_mask = torch.ones(T, T).to(self.device)
         attn_mask = torch.tril(attn_mask, diagonal=-1)
         outputs = []
         for i in range(self.N):

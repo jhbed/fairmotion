@@ -69,7 +69,10 @@ def train(args):
     for iterations, (src_seqs, tgt_seqs) in enumerate(dataset["train"]):
         model.eval()
         src_seqs, tgt_seqs = src_seqs.to(device), tgt_seqs.to(device)
-        outputs = model(src_seqs, tgt_seqs, teacher_forcing_ratio=1,)
+        if args.architecture == 'spatio_temporal':
+            outputs = model(src_seqs)
+        else:
+            outputs = model(src_seqs, tgt_seqs, teacher_forcing_ratio=1,)
         loss = criterion(outputs, tgt_seqs)
         epoch_loss += loss.item()
     epoch_loss = epoch_loss / (iterations + 1)
@@ -98,9 +101,12 @@ def train(args):
         for iterations, (src_seqs, tgt_seqs) in enumerate(dataset["train"]):
             opt.optimizer.zero_grad()
             src_seqs, tgt_seqs = src_seqs.to(device), tgt_seqs.to(device)
-            outputs = model(
-                src_seqs, tgt_seqs, teacher_forcing_ratio=teacher_forcing_ratio
-            )
+            if args.architecture == 'spatio_temporal':
+                outputs = model(src_seqs)
+            else:
+                outputs = model(
+                    src_seqs, tgt_seqs, teacher_forcing_ratio=teacher_forcing_ratio
+                )
             outputs = outputs.double()
             loss = criterion(
                 outputs,
@@ -219,6 +225,7 @@ if __name__ == "__main__":
             "transformer",
             "transformer_encoder",
             "rnn",
+            "spatio_temporal"
         ],
     )
     parser.add_argument(

@@ -14,6 +14,7 @@ from fairmotion.models import (
     rnn,
     seq2seq,
     transformer,
+    spatio_temporal_transformer
 )
 from fairmotion.tasks.motion_prediction import dataset as motion_dataset
 from fairmotion.utils import constants
@@ -137,6 +138,11 @@ def prepare_model(
     elif architecture == "transformer":
         model = transformer.TransformerModel(
             input_dim, hidden_dim, 4, hidden_dim, num_layers,
+        )
+    elif architecture == "spatio_temporal":
+        # hardcoded to 24 joints for now...
+        model = spatio_temporal_transformer.SpatioTemporalTransformer(
+            24, hidden_dim
         )
     model = model.to(device)
     model.zero_grad()
