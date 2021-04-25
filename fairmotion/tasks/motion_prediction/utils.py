@@ -114,7 +114,7 @@ def prepare_dataset(
 
 
 def prepare_model(
-    input_dim, hidden_dim, device, num_layers=1, architecture="seq2seq"
+    input_dim, hidden_dim, device, num_layers=1, architecture="seq2seq", precision=None,
 ):
     if architecture == "rnn":
         model = rnn.RNN(input_dim, hidden_dim, num_layers)
@@ -146,7 +146,10 @@ def prepare_model(
         )
     model = model.to(device)
     model.zero_grad()
-    model.double()
+    if precision == "float":
+        model.half()
+    else:
+        model.double()
     return model
 
 

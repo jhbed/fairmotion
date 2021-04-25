@@ -59,6 +59,7 @@ def train(args):
         device=device,
         num_layers=args.num_layers,
         architecture=args.architecture,
+        precision=args.precision,
     )
 
     criterion = nn.MSELoss()
@@ -69,6 +70,8 @@ def train(args):
     for iterations, (src_seqs, tgt_seqs) in enumerate(dataset["train"]):
         model.eval()
         src_seqs, tgt_seqs = src_seqs.to(device), tgt_seqs.to(device)
+        if args.precision == "float":
+            src_seqs, tgt_seqs = src_seqs.half(), tgt_seqs.half()
         if args.architecture == 'spatio_temporal':
             outputs = model(src_seqs)
         else:
@@ -237,6 +240,13 @@ if __name__ == "__main__":
         help="Torch optimizer",
         default="sgd",
         choices=["adam", "sgd", "noamopt"],
+    )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        help="Model precision",
+        default="double",
+        choices=["float", "double"],
     )
     args = parser.parse_args()
     main(args)
