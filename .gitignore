@@ -7,3 +7,4 @@ __pycache__/
 dist/
 build/
 fairmotion/tasks/motion_prediction/test_data/*
+.idea/*

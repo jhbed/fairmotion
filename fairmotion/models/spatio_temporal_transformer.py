@@ -7,8 +7,8 @@ import torch.autograd.profiler as profiler
 from torch import multiprocessing
 from fairmotion.models.transformer import PositionalEncoding
 
-TIMING_LOGS_VERBOSITY_LEVEL = 19 # all logs >= this verbosity will print
-RUNTIMES = [] # this is a bad idea, but I'm doing it anyway because it makes sorting convenient
+TIMING_LOGS_VERBOSITY_LEVEL = 19  # all logs >= this verbosity will print
+RUNTIMES = []  # this is a bad idea, but I'm doing it anyway because it makes sorting convenient
 
 def get_runtime(classname=None, verbosity_level=5):
     def get_runtime_noarg(func):
@@ -35,7 +35,7 @@ def convert_joints_from_3d_to_4d(tensor, N,M):
     '''
     return tensor.reshape(tensor.shape[0], tensor.shape[1], tensor.shape[2] // M, tensor.shape[2] // N)
 
-def convert_joints_from_4d_to_3d(tensor, N, M):
+def convert_joints_from_4d_to_3d(tensor):
     '''
     input shape: (B, T, N, M) (ie. batch, seq_len, input_dim)
     output shape: (B, T, N*M)
@@ -59,7 +59,7 @@ class AutoRegressiveSpatioTemporalTransformer(nn.Module):
         '''
         in_len = src.shape[1]
         out_len = tgt.shape[1]
-        full_seq = torch.cat([src,tgt], dim=1)
+        full_seq = torch.cat([src, tgt], dim=1)
         '''
         Training works differently than test. In training, we combine source
         and target and predict t+1 at each point. The trainer should know this 
@@ -125,19 +125,19 @@ class SpatioTemporalTransformer(nn.Module):
     def forward(self, inputs):
         embeddings = self.position_encoding_layer(self.embedding_layer(inputs))
 
-        #reverse batch and sequence length for attention layers because 
+        # reverse batch and sequence length for attention layers because
         # nn.MultiheadAttention expects input of (T, B, N*D)
-        embeddings = embeddings.permute(1,0, 2)
+        embeddings = embeddings.permute(1, 0, 2)
 
         out = self.attention_layers(embeddings)
 
         out = convert_joints_from_3d_to_4d(out, self.N, self.D)
         out = self.final_linear_layer(out)
-        out = convert_joints_from_4d_to_3d(out, self.N, self.M)
+        out = convert_joints_from_4d_to_3d(out)
 
         # Transpose back into (B, T, H)
         out = out.permute(1, 0, 2)
-        out += inputs # residual layer
+        out.add_(inputs)  # residual layer
 
         # project to desired output length
 
@@ -169,7 +169,7 @@ class JointEmbeddingLayer(nn.Module):
         # I do the W and bias initialization like this to ensure that the weights 
         # are initialized exactly like Pytorch does it.
         linears = [nn.Linear(in_features=M, out_features=D) for _ in range(N)]
-        self.W = nn.Parameter(torch.stack([lin.weight for lin in linears]).permute(0,2,1), requires_grad=True).to(device)
+        self.W = nn.Parameter(torch.stack([lin.weight for lin in linears]).permute(0, 2, 1), requires_grad=True).to(device)
         self.bias = nn.Parameter(torch.stack([lin.bias for lin in linears]).unsqueeze(0).unsqueeze(0), requires_grad=True).to(device)
         # Saving these because they are helpful for reshaping inputs / outputs
         self.M = M
@@ -182,7 +182,7 @@ class JointEmbeddingLayer(nn.Module):
         """
         inputs = convert_joints_from_3d_to_4d(inputs, self.N, self.M)
         out = torch.einsum("btnm,nmd->btnd", inputs, self.W) + self.bias
-        return convert_joints_from_4d_to_3d(out, self.N, self.M)
+        return convert_joints_from_4d_to_3d(out)
 
 class AttentionLayer(nn.Module):
 
@@ -212,7 +212,8 @@ class AttentionLayer(nn.Module):
 
         self.layer_norm = nn.LayerNorm(embed_dim*num_joints)
         self.layer_norm_small = nn.LayerNorm(embed_dim)
-        self.dropout = nn.Dropout(dropout_rate)
+        self.inplace_dropout = nn.Dropout(dropout_rate, inplace=True)
+        self.inplace_relu = nn.ReLU(inplace=True)
 
         self.N = num_joints
         self.D = embed_dim
@@ -226,26 +227,26 @@ class AttentionLayer(nn.Module):
         # these are obviously not right, just putting this in here as placeholders for now in this form so it 
         # feeds-forward without error
         spatial_out = self.spatial_attention.forward(inputs)
-        spatial_out += inputs # residual layer
+        spatial_out.add_(inputs)  # residual layer
         spatial_out = self.layer_norm(spatial_out)
 
         temporal_out = self.temporal_attention.forward(inputs)
-        temporal_out += inputs #residual layer  
+        temporal_out.add_(inputs)  # residual layer
         temporal_out = self.layer_norm(temporal_out)
 
-        attention_out = spatial_out + temporal_out
-
+        attention_out = spatial_out  # Rename for clear reading, no new allocation
+        attention_out.add_(temporal_out)
         attention_out = convert_joints_from_3d_to_4d(attention_out, self.N, self.D)
 
         out = self.linear1(attention_out)
-        out = torch.relu(out) # Relu is used here as described in "Attention is All You Need"
+        self.inplace_relu(out)  # Relu is used here as described in "Attention is All You Need"
         out = self.linear2(out)
 
-        out = self.dropout(out)
-        out += attention_out # residual layer
+        self.inplace_dropout(out)
+        out.add_(attention_out)  # residual layer
         out = self.layer_norm_small(out)
 
-        out = convert_joints_from_4d_to_3d(out, self.N, self.D)
+        out = convert_joints_from_4d_to_3d(out)
 
         return out
 
@@ -269,7 +270,7 @@ class SpatialAttentionLayer(nn.Module):
         # These heads are shared across timesteps
         # so below for each timestep T, we are using the same set of "heads"
         self.heads = nn.ModuleList([SpatialAttentionHead(N, D, self.F, self.device) for _ in range(H)])
-        self.dropout = nn.Dropout(dropout_rate)
+        self.inplace_dropout = nn.Dropout(dropout_rate, inplace=True)
 
     def forward(self, inputs):
         '''
@@ -295,7 +296,7 @@ class SpatialAttentionLayer(nn.Module):
             attns = torch.flatten(attns, start_dim=1)
             outputs[i] = attns
         # dropout
-        outputs = self.dropout(outputs)
+        self.inplace_dropout(outputs)
         return outputs
 
 
@@ -353,7 +354,7 @@ class TemporalAttentionLayer(nn.Module):
         self.D = D
         # Each joint uses a separate MHA
         self.MHAs = nn.ModuleList([nn.MultiheadAttention(D, H) for _ in range(N)])
-        self.dropout = nn.Dropout(dropout_rate)
+        self.inplace_dropout = nn.Dropout(dropout_rate, inplace=True)
         # Maybe consider passing the "device"
         # variable all the way from train.py
         self.device = device
@@ -385,7 +386,7 @@ class TemporalAttentionLayer(nn.Module):
                 joint_inputs, joint_inputs, joint_inputs, attn_mask=attn_mask)
             outputs[:, :, start:start+self.D] = joint_outputs
         # dropout
-        outputs = self.dropout(outputs)
+        self.inplace_dropout(outputs)
         return outputs
 
 
@@ -416,7 +417,7 @@ if __name__ == '__main__':
     
     print("forward time: ", time.time() - start)
     print(x.shape)
-    print(y.shape) # B, T, N*D
+    print(y.shape)  # B, T, N*D
     loss = y.sum()
 
     start = time.time()
