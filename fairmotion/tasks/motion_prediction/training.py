@@ -104,6 +104,8 @@ def train(args):
         for iterations, (src_seqs, tgt_seqs) in enumerate(dataset["train"]):
             opt.optimizer.zero_grad()
             src_seqs, tgt_seqs = src_seqs.to(device), tgt_seqs.to(device)
+            if args.precision == "float":
+                src_seqs, tgt_seqs = src_seqs.half(), tgt_seqs.half()
             if args.architecture == 'spatio_temporal':
                 outputs = model(src_seqs)
             else:

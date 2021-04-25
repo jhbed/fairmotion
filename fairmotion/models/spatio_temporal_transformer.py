@@ -93,7 +93,8 @@ class AutoRegressiveSpatioTemporalTransformer(nn.Module):
 
 class SpatioTemporalTransformer(nn.Module):
 
-    def __init__(self, N, D, M=9, L=4, dropout_rate=0.1, num_heads=4, feedforward_size=256, input_len=None, pred_len=None, device=None):
+    def __init__(self, N, D, M=9, L=4, dropout_rate=0.1, num_heads=4,
+            feedforward_size=256, input_len=None, pred_len=None, device=None):
         """
         :param N: The number of joints that are in each pose in
         the input.
@@ -105,10 +106,10 @@ class SpatioTemporalTransformer(nn.Module):
         if self.device is None:
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        self.embedding_layer = JointEmbeddingLayer(N, D, M, device)
+        self.embedding_layer = JointEmbeddingLayer(N, D, M, self.device)
         self.position_encoding_layer = PositionalEncoding(N*D, dropout_rate)
         self.attention_layers = nn.Sequential(
-                                    *[AttentionLayer(D, N, num_heads, dropout_rate, feedforward_size, device=device) for _ in range(L)])
+                                    *[AttentionLayer(D, N, num_heads, dropout_rate, feedforward_size, device=self.device) for _ in range(L)])
 
         # one last linear layer (not sure what shapes to do yet)
         self.final_linear_layer = nn.Linear(D, M)
@@ -170,7 +171,6 @@ class JointEmbeddingLayer(nn.Module):
         linears = [nn.Linear(in_features=M, out_features=D) for _ in range(N)]
         self.W = nn.Parameter(torch.stack([lin.weight for lin in linears]).permute(0,2,1), requires_grad=True).to(device)
         self.bias = nn.Parameter(torch.stack([lin.bias for lin in linears]).unsqueeze(0).unsqueeze(0), requires_grad=True).to(device)
-
         # Saving these because they are helpful for reshaping inputs / outputs
         self.M = M
         self.N = N
@@ -195,7 +195,8 @@ class AttentionLayer(nn.Module):
                                     embed_dim,
                                     N=num_joints,
                                     H=num_heads,
-                                    dropout_rate=dropout_rate
+                                    dropout_rate=dropout_rate,
+                                    device=device
                                 )
         self.temporal_attention = TemporalAttentionLayer(
                                     embed_dim,
@@ -254,7 +255,7 @@ class SpatialAttentionLayer(nn.Module):
     K and V are shared across joints
     Q is joint specific
     '''
-    def __init__(self, D, H=8, N=20, dropout_rate=0.1):
+    def __init__(self, D, H=8, N=20, dropout_rate=0.1, device=None):
         """
         F = D / H = D / 8
         """
@@ -262,9 +263,12 @@ class SpatialAttentionLayer(nn.Module):
         self.N = N
         self.D = D
         self.F = int(D / H)
+        self.device = device
+        if self.device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # These heads are shared across timesteps
         # so below for each timestep T, we are using the same set of "heads"
-        self.heads = nn.ModuleList([SpatialAttentionHead(N, D, self.F) for _ in range(H)])
+        self.heads = nn.ModuleList([SpatialAttentionHead(N, D, self.F, self.device) for _ in range(H)])
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, inputs):
@@ -276,35 +280,34 @@ class SpatialAttentionLayer(nn.Module):
         '''
         T, B, _ = inputs.size()
         inputs = inputs.reshape(T, B, self.N, self.D)
-        outputs = []
+        outputs = torch.zeros(T, B, self.N * self.D).to(self.device)
 
         for i in range(T):
             timestep_inputs = inputs[i]
-            attns = []
+            attns = torch.zeros(B, self.N, self.D).to(self.device)
+            start = 0
             for head in self.heads:
                 attn = head.forward(timestep_inputs)
-                attns.append(attn)
+                attns[:, :, start:start+self.F] = attn
+                start += self.F
             # each attn is (B, N, F)
-            # Concatenate results back to (B, N, D)
-            all_heads = torch.cat(attns, -1)
             # flatten --> (B, N*D)
-            all_heads = torch.flatten(all_heads, start_dim=1)
-            outputs.append(all_heads)
-        # Combine each timestep's (N, D) back to get (T, N*D)
-        all_attentions = torch.stack(outputs, -1)
-        # permute to return (T, B, N*D)
-        all_attentions = all_attentions.permute(2, 0, 1)
+            attns = torch.flatten(attns, start_dim=1)
+            outputs[i] = attns
         # dropout
-        all_attentions = self.dropout(all_attentions)
-        return all_attentions
+        outputs = self.dropout(outputs)
+        return outputs
 
 
 class SpatialAttentionHead(nn.Module):
 
-    def __init__(self, N, D, F):
+    def __init__(self, N, D, F, device=None):
         """One of the heads in the SpatialAttentionLayer
         """
         super(SpatialAttentionHead, self).__init__()
+        self.device = device
+        if self.device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.D = D
         self.F = F
         self.sqrt_F = np.sqrt(self.F)
@@ -321,15 +324,14 @@ class SpatialAttentionHead(nn.Module):
 
         Each head shall return (N, F)
         '''
+        B, N, D = inputs.size()
         k_outputs = self.k(inputs)
         v_outputs = self.v(inputs)
-        q_outputs = []
+        q_outputs = torch.zeros(B, N, self.F).to(self.device)
         i = 0
         for q in self.joint_Qs:
-            q_outputs.append(q(inputs[:, i, :]))
+            q_outputs[:, i, :] = q(inputs[:, i, :])
             i += 1
-        q_outputs = torch.stack(q_outputs, -1)
-        q_outputs = q_outputs.permute(0, 2, 1)
 
         attn = torch.matmul(
             q_outputs, k_outputs.transpose(-2, -1)) / self.sqrt_F
@@ -372,20 +374,19 @@ class TemporalAttentionLayer(nn.Module):
         # and zeros else where
         attn_mask = torch.ones(T, T).to(self.device)
         attn_mask = torch.tril(attn_mask, diagonal=-1)
-        outputs = []
+        outputs = torch.zeros(T, B, self.N * self.D).to(self.device)
         for i in range(self.N):
+            start = self.D * i
             # joint_inputs grabs (T, B, D) for joint i
             joint_inputs = inputs[:, :, i, :]
             mha = self.MHAs[i]
             # attn_mask prevents information leak from future time steps
             joint_outputs, joint_outputs_weights = mha(
                 joint_inputs, joint_inputs, joint_inputs, attn_mask=attn_mask)
-            outputs.append(joint_outputs)
-        # Combine each joint's (T, D) back to get (T, N*D)
-        all_attentions = torch.cat(outputs, -1)
+            outputs[:, :, start:start+self.D] = joint_outputs
         # dropout
-        all_attentions = self.dropout(all_attentions)
-        return all_attentions
+        outputs = self.dropout(outputs)
+        return outputs
 
 
 
@@ -393,15 +394,17 @@ class TemporalAttentionLayer(nn.Module):
 if __name__ == '__main__':
 
     print(torch.cuda.get_device_name(0))
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     
     N = 24
     M = 9
     D = 64
     T = 12
     B = 124
-    x = torch.rand(B, T, N*M)
+    x = torch.rand(B, T, N*M).to(DEVICE)
 
     model = SpatioTemporalTransformer(N,D, num_heads=4, L=4, feedforward_size=128)
+    model = model.to(DEVICE)
 
     # x = torch.rand(B, N*M, T)
 
