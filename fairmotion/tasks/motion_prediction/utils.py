@@ -144,6 +144,10 @@ def prepare_model(
         model = spatio_temporal_transformer.SpatioTemporalTransformer(
             24, hidden_dim
         )
+    elif architecture == "st_transformer":
+        model = spatio_temporal_transformer.AutoRegressiveSpatioTemporalTransformer(
+            input_dim, hidden_dim, M=9, L=num_layers
+        )
     model = model.to(device)
     model.zero_grad()
     if precision == "float":
