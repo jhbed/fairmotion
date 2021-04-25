@@ -146,14 +146,15 @@ def prepare_model(
         )
     elif architecture == "st_transformer":
         model = spatio_temporal_transformer.AutoRegressiveSpatioTemporalTransformer(
-            input_dim, hidden_dim, M=9, L=num_layers
+            # assuming that we are using rotmat representation using 9 vectors
+            int(input_dim/9), D=64, M=9, L=2, feedforward_size=128, dropout_rate=0.1, num_heads=4, device='cuda'
         )
     model = model.to(device)
     model.zero_grad()
-    if precision == "float":
-        model.half()
-    else:
-        model.double()
+    # if precision == "float":
+    #     model.half()
+    # else:
+    #     model.double()
     return model
 
 

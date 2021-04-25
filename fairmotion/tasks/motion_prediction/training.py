@@ -1,5 +1,8 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
+import sys
+sys.path.append('C:\\Users\\jakeh\\projects\\school\\dl\\fm\\fairmotion')
+
 import argparse
 import logging
 import matplotlib.pyplot as plt
@@ -29,6 +32,12 @@ def set_seeds():
 
 
 def train(args):
+
+    if args.precision == 'half':
+        torch.set_default_tensor_type(torch.HalfTensor)
+    else:
+        torch.set_default_tensor_type(torch.FloatTensor)
+
     fairmotion_utils.create_dir_if_absent(args.save_model_path)
     logging.info(args._get_kwargs())
     utils.log_config(args.save_model_path, args)
@@ -230,7 +239,8 @@ if __name__ == "__main__":
             "transformer",
             "transformer_encoder",
             "rnn",
-            "spatio_temporal"
+            "spatio_temporal",
+            "st_transformer"
         ],
     )
     parser.add_argument(
@@ -248,7 +258,7 @@ if __name__ == "__main__":
         type=str,
         help="Model precision",
         default="double",
-        choices=["float", "double"],
+        choices=["float", "double", "half"],
     )
     args = parser.parse_args()
     main(args)

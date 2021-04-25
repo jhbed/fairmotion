@@ -48,6 +48,7 @@ class AutoRegressiveSpatioTemporalTransformer(nn.Module):
     def __init__(self, N, D, M=9, L=1, dropout_rate=0.1, num_heads=4, feedforward_size=256, device=None):
         super(AutoRegressiveSpatioTemporalTransformer, self).__init__()
         self.spatio_temporal_transformer = SpatioTemporalTransformer(N, D, M, L, dropout_rate, num_heads, feedforward_size, device=device)
+        self.device = device
 
     def forward(self, src, tgt, max_len=None, teacher_forcing_ratio=None):
         '''
@@ -59,11 +60,11 @@ class AutoRegressiveSpatioTemporalTransformer(nn.Module):
         '''
         in_len = src.shape[1]
         out_len = tgt.shape[1]
-        full_seq = torch.cat([src, tgt], dim=1)
+        full_seq = torch.cat([src, tgt], dim=1).to(self.device)
         '''
         Training works differently than test. In training, we combine source
         and target and predict t+1 at each point. The trainer should know this 
-        and coordinate loss accordingly.
+        and coordinate lgit logoss accordingly.
 
         Basically in training we always only predict one timestep in the future,
         but importantly the trainer must do somethig like:
@@ -80,9 +81,8 @@ class AutoRegressiveSpatioTemporalTransformer(nn.Module):
             # frames into the future and compare tgt with our out. The variable
             # "tgt" is never used so as to not cheat (since now tgt is being 
             # used for comparison)
-            inputs = torch.zeros(full_seq.shape)
+            inputs = torch.zeros(full_seq.shape).to(self.device)
             inputs[:, 0:in_len] = src
-            preds_at_timestep = []
             for t in range(out_len):
                 pred_one_timestep_ahead = self.spatio_temporal_transformer(inputs[:, t:in_len+t])
                 # the last element must go into our input for the next round
@@ -90,6 +90,11 @@ class AutoRegressiveSpatioTemporalTransformer(nn.Module):
 
             # return the parts that were predicted by the model
             return inputs[:, in_len:]
+
+    def init_weights(self):
+        # this just does what the other models do, hopefully it is fine
+        for name, param in self.named_parameters():
+            nn.init.uniform_(param.data, -0.08, 0.08)
 
 class SpatioTemporalTransformer(nn.Module):
 
@@ -169,8 +174,8 @@ class JointEmbeddingLayer(nn.Module):
         # I do the W and bias initialization like this to ensure that the weights 
         # are initialized exactly like Pytorch does it.
         linears = [nn.Linear(in_features=M, out_features=D) for _ in range(N)]
-        self.W = nn.Parameter(torch.stack([lin.weight for lin in linears]).permute(0, 2, 1), requires_grad=True).to(device)
-        self.bias = nn.Parameter(torch.stack([lin.bias for lin in linears]).unsqueeze(0).unsqueeze(0), requires_grad=True).to(device)
+        self.W = nn.Parameter(torch.stack([lin.weight for lin in linears]).permute(0, 2, 1).to(device), requires_grad=True)
+        self.bias = nn.Parameter(torch.stack([lin.bias for lin in linears]).unsqueeze(0).unsqueeze(0).to(device), requires_grad=True)
         # Saving these because they are helpful for reshaping inputs / outputs
         self.M = M
         self.N = N
@@ -396,23 +401,26 @@ if __name__ == '__main__':
 
     print(torch.cuda.get_device_name(0))
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    
+    DEVICE = 'cuda'
     N = 24
     M = 9
     D = 64
     T = 12
     B = 124
-    x = torch.rand(B, T, N*M).to(DEVICE)
 
-    model = SpatioTemporalTransformer(N,D, num_heads=4, L=4, feedforward_size=128)
-    model = model.to(DEVICE)
+    x = torch.rand(B, T, N*M).to(DEVICE).double()
+    target = torch.rand(B, 3, N*M).to(DEVICE)
+    model = AutoRegressiveSpatioTemporalTransformer(N,D, num_heads=4, L=4, feedforward_size=128, device=DEVICE).to(DEVICE)
+    # model = SpatioTemporalTransformer(N,D, num_heads=4, L=4, feedforward_size=128, device='cpu').cpu()
+    # model = model.to(DEVICE)
 
     # x = torch.rand(B, N*M, T)
 
     import time
     start = time.time()
 
-    y = model(x)
+    #y = model(x)
+    y = model(x, target)
 
     
     print("forward time: ", time.time() - start)
@@ -428,7 +436,7 @@ if __name__ == '__main__':
     # they have grad. ".grad" will give a warning or error if we did something 
     # wrong.
     #print(model.attention_layers[0].linear1.weight.grad.shape)
-    print(model.embedding_layer.W.grad.shape)
+    print('gradient shape', model.spatio_temporal_transformer.embedding_layer.W.grad.shape)
 
     param_count = 0
     for parameter in model.parameters():
